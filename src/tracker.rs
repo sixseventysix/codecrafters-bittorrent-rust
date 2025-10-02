@@ -42,10 +42,15 @@ pub fn get_peers_from_magnet(magnet_info: &MagnetLink) -> Result<Vec<String>> {
         magnet_info.tracker_url, info_hash_encoded, PEER_ID
     );
 
+    eprintln!("Debug: Tracker request URL: {}", request_url);
+
     let response = reqwest::blocking::get(&request_url)
         .context("Failed to send tracker request")?;
     let response_bytes = response.bytes()
         .context("Failed to read tracker response")?;
+
+    eprintln!("Debug: Tracker response bytes: {:?}", &response_bytes[..std::cmp::min(100, response_bytes.len())]);
+
     let tracker_response: serde_bencode::value::Value =
         serde_bencode::from_bytes(&response_bytes)
             .context("Failed to decode tracker response")?;
@@ -56,6 +61,12 @@ pub fn get_peers_from_magnet(magnet_info: &MagnetLink) -> Result<Vec<String>> {
 fn decode_peer_list(tracker_response: serde_bencode::value::Value) -> Result<Vec<String>> {
     let mut peers = Vec::new();
     if let serde_bencode::value::Value::Dict(response_dict) = tracker_response {
+        // Check if there's a failure reason
+        if let Some(serde_bencode::value::Value::Bytes(reason)) = response_dict.get(b"failure reason".as_ref()) {
+            let reason_str = String::from_utf8_lossy(reason);
+            return Err(anyhow!("Tracker error: {}", reason_str));
+        }
+
         if let Some(serde_bencode::value::Value::Bytes(peers_bytes)) = response_dict.get(b"peers".as_ref()) {
             // Decode compact peer format (6 bytes per peer)
             for peer_chunk in peers_bytes.chunks(6) {
@@ -65,6 +76,11 @@ fn decode_peer_list(tracker_response: serde_bencode::value::Value) -> Result<Vec
                 peers.push(format!("{}:{}", ip, port));
             }
         } else {
+            // Debug: print what keys are in the response
+            eprintln!("Debug: Tracker response keys:");
+            for (key, _) in response_dict.iter() {
+                eprintln!("  - {}", String::from_utf8_lossy(key));
+            }
             return Err(anyhow!("No peers found in tracker response"));
         }
     } else {
