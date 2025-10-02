@@ -80,7 +80,7 @@ fn main() {
 
             // Extract length and calculate info hash from info dictionary
             if let Some(info_value) = dict.get(b"info".as_ref()) {
-                // Extract length
+                // Extract length, piece length, and pieces
                 if let serde_bencode::value::Value::Dict(info) = info_value {
                     if let Some(serde_bencode::value::Value::Int(length)) = info.get(b"length".as_ref()) {
                         println!("Length: {}", length);
@@ -93,6 +93,21 @@ fn main() {
                 hasher.update(&info_bencoded);
                 let info_hash = hasher.finalize();
                 println!("Info Hash: {}", hex::encode(info_hash));
+
+                // Extract piece length and piece hashes
+                if let serde_bencode::value::Value::Dict(info) = info_value {
+                    if let Some(serde_bencode::value::Value::Int(piece_length)) = info.get(b"piece length".as_ref()) {
+                        println!("Piece Length: {}", piece_length);
+                    }
+
+                    if let Some(serde_bencode::value::Value::Bytes(pieces)) = info.get(b"pieces".as_ref()) {
+                        println!("Piece Hashes:");
+                        // Each SHA-1 hash is 20 bytes
+                        for chunk in pieces.chunks(20) {
+                            println!("{}", hex::encode(chunk));
+                        }
+                    }
+                }
             }
         }
     } else {
