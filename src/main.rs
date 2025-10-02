@@ -279,8 +279,48 @@ fn exchange_initial_messages(stream: &mut TcpStream) {
     // message[0] should be 1 (unchoke)
 }
 
+// Receive and parse extension handshake message
+// Returns the peer's extension ID for ut_metadata
+fn receive_extension_handshake(stream: &mut TcpStream) -> Option<i64> {
+    // Read message length
+    let mut length_prefix = [0u8; 4];
+    stream.read_exact(&mut length_prefix).unwrap();
+    let msg_length = u32::from_be_bytes(length_prefix);
+
+    // Read message
+    let mut message = vec![0u8; msg_length as usize];
+    stream.read_exact(&mut message).unwrap();
+
+    // Check message ID (should be 20 for extension protocol)
+    if message[0] != 20 {
+        return None;
+    }
+
+    // Check extension message ID (should be 0 for handshake)
+    if message[1] != 0 {
+        return None;
+    }
+
+    // Parse bencoded dictionary from payload (starting at index 2)
+    let dict_bytes = &message[2..];
+    let extension_dict: serde_bencode::value::Value =
+        serde_bencode::from_bytes(dict_bytes).unwrap();
+
+    // Extract ut_metadata extension ID from {"m": {"ut_metadata": <ID>}}
+    if let serde_bencode::value::Value::Dict(dict) = extension_dict {
+        if let Some(serde_bencode::value::Value::Dict(m_dict)) = dict.get(b"m".as_ref()) {
+            if let Some(serde_bencode::value::Value::Int(id)) = m_dict.get(b"ut_metadata".as_ref()) {
+                return Some(*id);
+            }
+        }
+    }
+
+    None
+}
+
 // Exchange messages with extension support
-fn exchange_messages_with_extensions(stream: &mut TcpStream, peer_supports_extensions: bool) {
+// Returns the peer's ut_metadata extension ID if available
+fn exchange_messages_with_extensions(stream: &mut TcpStream, peer_supports_extensions: bool) -> Option<i64> {
     // Read bitfield message
     let mut length_prefix = [0u8; 4];
     stream.read_exact(&mut length_prefix).unwrap();
@@ -289,9 +329,14 @@ fn exchange_messages_with_extensions(stream: &mut TcpStream, peer_supports_exten
     stream.read_exact(&mut message).unwrap();
     // message[0] should be 5 (bitfield)
 
+    let mut peer_metadata_extension_id = None;
+
     // Send extension handshake if peer supports extensions
     if peer_supports_extensions {
         send_extension_handshake(stream);
+
+        // Receive extension handshake response
+        peer_metadata_extension_id = receive_extension_handshake(stream);
     }
 
     // Send interested message
@@ -304,6 +349,8 @@ fn exchange_messages_with_extensions(stream: &mut TcpStream, peer_supports_exten
     let mut message = vec![0u8; msg_length as usize];
     stream.read_exact(&mut message).unwrap();
     // message[0] should be 1 (unchoke)
+
+    peer_metadata_extension_id
 }
 
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
@@ -534,9 +581,12 @@ fn main() {
         let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
 
         // Exchange messages (bitfield, extension handshake if supported, interested, unchoke)
-        exchange_messages_with_extensions(&mut stream, peer_supports_extensions);
+        let peer_metadata_extension_id = exchange_messages_with_extensions(&mut stream, peer_supports_extensions);
 
         println!("Peer ID: {}", hex::encode(peer_id));
+        if let Some(extension_id) = peer_metadata_extension_id {
+            println!("Peer Metadata Extension ID: {}", extension_id);
+        }
     } else {
         println!("unknown command: {}", args[1])
     }
