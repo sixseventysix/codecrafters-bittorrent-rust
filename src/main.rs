@@ -1,5 +1,6 @@
 use serde_json;
 use std::env;
+use std::fs;
 
 use serde_bencode;
 
@@ -61,13 +62,28 @@ fn main() {
     let command = &args[1];
 
     if command == "decode" {
-        // You can use print statements as follows for debugging, they'll be visible when running tests.
-        // eprintln!("Logs from your program will appear here!");
-
-        // Uncomment this block to pass the first stage
         let encoded_value = &args[2];
         let decoded_value = decode_bencoded_value(encoded_value);
         println!("{}", decoded_value.to_string());
+    } else if command == "info" {
+        let torrent_file = &args[2];
+        let bytes = fs::read(torrent_file).unwrap();
+        let torrent: serde_bencode::value::Value = serde_bencode::from_bytes(&bytes).unwrap();
+
+        if let serde_bencode::value::Value::Dict(dict) = torrent {
+            // Extract tracker URL
+            if let Some(serde_bencode::value::Value::Bytes(announce)) = dict.get(b"announce".as_ref()) {
+                let tracker_url = String::from_utf8(announce.clone()).unwrap();
+                println!("Tracker URL: {}", tracker_url);
+            }
+
+            // Extract length from info dictionary
+            if let Some(serde_bencode::value::Value::Dict(info)) = dict.get(b"info".as_ref()) {
+                if let Some(serde_bencode::value::Value::Int(length)) = info.get(b"length".as_ref()) {
+                    println!("Length: {}", length);
+                }
+            }
+        }
     } else {
         println!("unknown command: {}", args[1])
     }
