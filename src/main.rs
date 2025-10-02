@@ -580,12 +580,24 @@ fn main() {
         let mut stream = TcpStream::connect(peer_addr).unwrap();
         let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
 
-        // Exchange messages (bitfield, extension handshake if supported, interested, unchoke)
-        let peer_metadata_extension_id = exchange_messages_with_extensions(&mut stream, peer_supports_extensions);
-
         println!("Peer ID: {}", hex::encode(peer_id));
-        if let Some(extension_id) = peer_metadata_extension_id {
-            println!("Peer Metadata Extension ID: {}", extension_id);
+
+        // If peer supports extensions, exchange extension handshakes
+        if peer_supports_extensions {
+            // Read bitfield message
+            let mut length_prefix = [0u8; 4];
+            stream.read_exact(&mut length_prefix).unwrap();
+            let msg_length = u32::from_be_bytes(length_prefix);
+            let mut message = vec![0u8; msg_length as usize];
+            stream.read_exact(&mut message).unwrap();
+
+            // Send our extension handshake
+            send_extension_handshake(&mut stream);
+
+            // Receive peer's extension handshake
+            if let Some(extension_id) = receive_extension_handshake(&mut stream) {
+                println!("Peer Metadata Extension ID: {}", extension_id);
+            }
         }
     } else {
         println!("unknown command: {}", args[1])
