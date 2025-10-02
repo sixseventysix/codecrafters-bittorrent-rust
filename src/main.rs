@@ -7,6 +7,7 @@ use std::io::{Write, Read};
 use serde_bencode;
 use sha1::{Sha1, Digest};
 use reqwest;
+use serde_urlencoded;
 
 // Structs
 struct TorrentInfo {
@@ -17,8 +18,49 @@ struct TorrentInfo {
     info_hash: Vec<u8>,
 }
 
+struct MagnetLink {
+    tracker_url: String,
+    info_hash: String,
+}
+
 const PEER_ID: &str = "00112233445566778899";
 const BLOCK_SIZE: i64 = 16 * 1024;
+
+// Parse magnet link and extract info hash and tracker URL
+fn parse_magnet_link(magnet_link: &str) -> MagnetLink {
+    // Remove "magnet:?" prefix
+    let query_string = magnet_link.strip_prefix("magnet:?").unwrap();
+
+    // Parse query parameters
+    let mut info_hash = String::new();
+    let mut tracker_url = String::new();
+
+    for param in query_string.split('&') {
+        if let Some((key, value)) = param.split_once('=') {
+            match key {
+                "xt" => {
+                    // Extract info hash from "urn:btih:<hash>"
+                    if let Some(hash) = value.strip_prefix("urn:btih:") {
+                        info_hash = hash.to_string();
+                    }
+                }
+                "tr" => {
+                    // URL decode the tracker URL
+                    tracker_url = serde_urlencoded::from_str::<String>(&format!("url={}", value))
+                        .ok()
+                        .and_then(|s| s.strip_prefix("url=").map(|s| s.to_string()))
+                        .unwrap_or_else(|| value.replace("%3A", ":").replace("%2F", "/"));
+                }
+                _ => {} // Ignore other parameters like "dn"
+            }
+        }
+    }
+
+    MagnetLink {
+        tracker_url,
+        info_hash,
+    }
+}
 
 // Parse torrent file and extract metadata
 fn parse_torrent_file(torrent_path: &str) -> TorrentInfo {
@@ -347,6 +389,12 @@ fn main() {
         let peer_id = perform_handshake(&mut stream, &torrent_info.info_hash);
 
         println!("Peer ID: {}", hex::encode(peer_id));
+    } else if command == "magnet_parse" {
+        let magnet_link = &args[2];
+        let magnet_info = parse_magnet_link(magnet_link);
+
+        println!("Tracker URL: {}", magnet_info.tracker_url);
+        println!("Info Hash: {}", magnet_info.info_hash);
     } else {
         println!("unknown command: {}", args[1])
     }
