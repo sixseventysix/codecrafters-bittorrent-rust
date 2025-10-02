@@ -1,29 +1,57 @@
 use serde_json;
 use std::env;
 
-// Available if you need it!
-// use serde_bencode
+use serde_bencode;
 
-#[allow(dead_code)]
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
-    // If encoded_value starts with a digit, it's a number
-    match encoded_value.chars().next().unwrap() {
-        c if c.is_digit(10) => {
-            // Example: "5:hello" -> "hello"
-            let colon_index = encoded_value.find(':').unwrap();
-            let number_string = &encoded_value[..colon_index];
-            let number = number_string.parse::<usize>().unwrap();
-            let string = &encoded_value[colon_index + 1..colon_index + 1 + number];
-            return serde_json::Value::String(string.to_string());
+    let decoded: serde_bencode::value::Value = serde_bencode::from_str(encoded_value).unwrap();
+
+    match decoded {
+        serde_bencode::value::Value::Bytes(b) => {
+            serde_json::Value::String(String::from_utf8(b).unwrap())
         }
-        'i' => {
-            // Example: "i52e" -> 52
-            let e_index = encoded_value.find('e').unwrap();
-            let number_string = &encoded_value[1..e_index];
-            let number = number_string.parse::<i64>().unwrap();
-            return serde_json::Value::Number(number.into());
+        serde_bencode::value::Value::Int(i) => {
+            serde_json::Value::Number(i.into())
         }
-        _ => panic!("Unhandled encoded value: {}", encoded_value),
+        serde_bencode::value::Value::List(list) => {
+            let json_list: Vec<serde_json::Value> = list
+                .into_iter()
+                .map(|v| bencode_to_json(v))
+                .collect();
+            serde_json::Value::Array(json_list)
+        }
+        serde_bencode::value::Value::Dict(dict) => {
+            let json_map: serde_json::Map<String, serde_json::Value> = dict
+                .into_iter()
+                .map(|(k, v)| (String::from_utf8(k).unwrap(), bencode_to_json(v)))
+                .collect();
+            serde_json::Value::Object(json_map)
+        }
+    }
+}
+
+fn bencode_to_json(value: serde_bencode::value::Value) -> serde_json::Value {
+    match value {
+        serde_bencode::value::Value::Bytes(b) => {
+            serde_json::Value::String(String::from_utf8(b).unwrap())
+        }
+        serde_bencode::value::Value::Int(i) => {
+            serde_json::Value::Number(i.into())
+        }
+        serde_bencode::value::Value::List(list) => {
+            let json_list: Vec<serde_json::Value> = list
+                .into_iter()
+                .map(|v| bencode_to_json(v))
+                .collect();
+            serde_json::Value::Array(json_list)
+        }
+        serde_bencode::value::Value::Dict(dict) => {
+            let json_map: serde_json::Map<String, serde_json::Value> = dict
+                .into_iter()
+                .map(|(k, v)| (String::from_utf8(k).unwrap(), bencode_to_json(v)))
+                .collect();
+            serde_json::Value::Object(json_map)
+        }
     }
 }
 
