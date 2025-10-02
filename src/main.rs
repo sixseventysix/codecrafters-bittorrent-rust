@@ -300,23 +300,46 @@ fn receive_metadata(stream: &mut TcpStream) -> Vec<u8> {
     // Parse bencoded dictionary from payload (starting at index 2)
     let payload = &message[2..];
 
-    // Try to parse the bencoded dictionary to find where it ends
-    // We need to consume the dictionary to find the split point
-    let mut reader = payload;
-    let parsed_dict: serde_bencode::value::Value =
-        serde_bencode::de::from_reader(&mut reader).unwrap();
+    // Find where the bencoded dictionary ends by tracking depth
+    let mut depth = 0;
+    let mut dict_end = 0;
+    let mut in_string = false;
+    let mut string_len = 0;
 
-    // Validate it's a data message (msg_type: 1)
-    if let serde_bencode::value::Value::Dict(dict) = &parsed_dict {
-        if let Some(serde_bencode::value::Value::Int(msg_type)) = dict.get(b"msg_type".as_ref()) {
-            if *msg_type != 1 {
-                panic!("Expected data message (msg_type 1), got {}", msg_type);
+    for (i, &byte) in payload.iter().enumerate() {
+        if in_string {
+            string_len -= 1;
+            if string_len == 0 {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if byte == b'd' || byte == b'l' {
+            depth += 1;
+        } else if byte == b'e' {
+            depth -= 1;
+            if depth == 0 {
+                dict_end = i + 1;
+                break;
+            }
+        } else if byte >= b'0' && byte <= b'9' {
+            // This is a string length
+            let mut j = i;
+            while j < payload.len() && payload[j] != b':' {
+                j += 1;
+            }
+            if j < payload.len() {
+                let len_str = std::str::from_utf8(&payload[i..j]).unwrap();
+                string_len = len_str.parse::<usize>().unwrap();
+                in_string = true;
             }
         }
     }
 
-    // The remaining bytes in reader are the metadata piece contents
-    reader.to_vec()
+    // Extract metadata piece contents (everything after the bencoded dictionary)
+    let metadata_piece = &payload[dict_end..];
+    metadata_piece.to_vec()
 }
 
 // Send metadata request message
