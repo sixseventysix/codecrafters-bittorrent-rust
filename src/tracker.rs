@@ -38,19 +38,14 @@ pub fn get_peers_from_magnet(magnet_info: &MagnetLink) -> Result<Vec<String>> {
         .collect();
 
     let request_url = format!(
-        "{}?info_hash={}&peer_id={}&port=6881&uploaded=0&downloaded=0&compact=1&event=started",
+        "{}?info_hash={}&peer_id={}&port=6881&uploaded=0&downloaded=0&left=1&compact=1",
         magnet_info.tracker_url, info_hash_encoded, PEER_ID
     );
-
-    eprintln!("Debug: Tracker request URL: {}", request_url);
 
     let response = reqwest::blocking::get(&request_url)
         .context("Failed to send tracker request")?;
     let response_bytes = response.bytes()
         .context("Failed to read tracker response")?;
-
-    eprintln!("Debug: Tracker response bytes: {:?}", &response_bytes[..std::cmp::min(100, response_bytes.len())]);
-
     let tracker_response: serde_bencode::value::Value =
         serde_bencode::from_bytes(&response_bytes)
             .context("Failed to decode tracker response")?;
