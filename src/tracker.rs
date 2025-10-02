@@ -71,11 +71,6 @@ fn decode_peer_list(tracker_response: serde_bencode::value::Value) -> Result<Vec
                 peers.push(format!("{}:{}", ip, port));
             }
         } else {
-            // Debug: print what keys are in the response
-            eprintln!("Debug: Tracker response keys:");
-            for (key, _) in response_dict.iter() {
-                eprintln!("  - {}", String::from_utf8_lossy(key));
-            }
             return Err(anyhow!("No peers found in tracker response"));
         }
     } else {

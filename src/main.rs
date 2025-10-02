@@ -7,7 +7,7 @@ mod magnet;
 
 use std::fs;
 use std::net::TcpStream;
-use std::io::Read;
+use std::io::{Read, Write};
 use sha1::{Sha1, Digest};
 use clap::{Parser, Subcommand};
 use anyhow::{Result, Context};
@@ -351,8 +351,20 @@ fn main() -> Result<()> {
                     return Ok(());
                 };
 
-                // Now exchange initial messages and download the piece
-                exchange_initial_messages(&mut stream)?;
+                // Send interested message (bitfield was already read above)
+                let interested_msg = [0u8, 0u8, 0u8, 1u8, 2u8]; // length=1, id=2
+                stream.write_all(&interested_msg)
+                    .context("Failed to send interested message")?;
+
+                // Read unchoke message
+                let mut length_prefix = [0u8; 4];
+                stream.read_exact(&mut length_prefix)
+                    .context("Failed to read unchoke message length")?;
+                let msg_length = u32::from_be_bytes(length_prefix);
+                let mut message = vec![0u8; msg_length as usize];
+                stream.read_exact(&mut message)
+                    .context("Failed to read unchoke message")?;
+                // message[0] should be 1 (unchoke)
 
                 let piece_data = download_piece_from_peer(
                     &mut stream,
