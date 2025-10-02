@@ -26,6 +26,11 @@ struct MagnetLink {
 const PEER_ID: &str = "00112233445566778899";
 const BLOCK_SIZE: i64 = 16 * 1024;
 
+// Convert hex string to bytes
+fn hex_to_bytes(hex: &str) -> Vec<u8> {
+    hex::decode(hex).unwrap()
+}
+
 // Parse magnet link and extract info hash and tracker URL
 fn parse_magnet_link(magnet_link: &str) -> MagnetLink {
     // Remove "magnet:?" prefix
@@ -141,12 +146,57 @@ fn get_peers_from_tracker(torrent_info: &TorrentInfo) -> Vec<String> {
     peers
 }
 
+// Get list of peers from tracker using magnet link info
+fn get_peers_from_magnet(magnet_info: &MagnetLink) -> Vec<String> {
+    let info_hash_bytes = hex_to_bytes(&magnet_info.info_hash);
+    let info_hash_encoded: String = info_hash_bytes.iter()
+        .map(|b| format!("%{:02x}", b))
+        .collect();
+
+    let request_url = format!(
+        "{}?info_hash={}&peer_id={}&port=6881&uploaded=0&downloaded=0&left=999999999&compact=1",
+        magnet_info.tracker_url, info_hash_encoded, PEER_ID
+    );
+
+    let response = reqwest::blocking::get(&request_url).unwrap();
+    let response_bytes = response.bytes().unwrap();
+    let tracker_response: serde_bencode::value::Value =
+        serde_bencode::from_bytes(&response_bytes).unwrap();
+
+    let mut peers = Vec::new();
+    if let serde_bencode::value::Value::Dict(response_dict) = tracker_response {
+        if let Some(serde_bencode::value::Value::Bytes(peers_bytes)) = response_dict.get(b"peers".as_ref()) {
+            // Decode compact peer format (6 bytes per peer)
+            for peer_chunk in peers_bytes.chunks(6) {
+                let ip = format!("{}.{}.{}.{}",
+                    peer_chunk[0], peer_chunk[1], peer_chunk[2], peer_chunk[3]);
+                let port = u16::from_be_bytes([peer_chunk[4], peer_chunk[5]]);
+                peers.push(format!("{}:{}", ip, port));
+            }
+        }
+    }
+    peers
+}
+
 // Perform handshake with peer
 fn perform_handshake(stream: &mut TcpStream, info_hash: &[u8]) -> [u8; 20] {
+    perform_handshake_with_extensions(stream, info_hash, false)
+}
+
+// Perform handshake with peer, optionally with extension support
+fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8], support_extensions: bool) -> [u8; 20] {
     let mut handshake = Vec::new();
     handshake.push(19u8);
     handshake.extend_from_slice(b"BitTorrent protocol");
-    handshake.extend_from_slice(&[0u8; 8]);
+
+    // Reserved bytes: set 20th bit from right to 1 if extensions are supported
+    let reserved = if support_extensions {
+        [0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00]
+    } else {
+        [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+    };
+    handshake.extend_from_slice(&reserved);
+
     handshake.extend_from_slice(info_hash);
     handshake.extend_from_slice(PEER_ID.as_bytes());
 
@@ -395,6 +445,22 @@ fn main() {
 
         println!("Tracker URL: {}", magnet_info.tracker_url);
         println!("Info Hash: {}", magnet_info.info_hash);
+    } else if command == "magnet_handshake" {
+        let magnet_link = &args[2];
+        let magnet_info = parse_magnet_link(magnet_link);
+
+        // Get peers from tracker
+        let peers = get_peers_from_magnet(&magnet_info);
+        let peer_addr = &peers[0]; // Use first peer
+
+        // Convert hex info hash to bytes
+        let info_hash_bytes = hex_to_bytes(&magnet_info.info_hash);
+
+        // Perform handshake with extension support
+        let mut stream = TcpStream::connect(peer_addr).unwrap();
+        let peer_id = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+
+        println!("Peer ID: {}", hex::encode(peer_id));
     } else {
         println!("unknown command: {}", args[1])
     }
