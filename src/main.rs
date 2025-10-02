@@ -153,11 +153,9 @@ fn get_peers_from_magnet(magnet_info: &MagnetLink) -> Vec<String> {
         .map(|b| format!("%{:02x}", b))
         .collect();
 
-    // For magnet links, we don't know the file length yet
-    // Try to get file info from tracker by making a request without 'left' parameter
-    // or use event=started which doesn't require accurate 'left' value
+    // For magnet links, we don't know the file length yet, so we use a small placeholder
     let request_url = format!(
-        "{}?info_hash={}&peer_id={}&port=6881&uploaded=0&downloaded=0&compact=1&event=started",
+        "{}?info_hash={}&peer_id={}&port=6881&uploaded=0&downloaded=0&left=1&compact=1",
         magnet_info.tracker_url, info_hash_encoded, PEER_ID
     );
 
