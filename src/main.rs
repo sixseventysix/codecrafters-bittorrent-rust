@@ -297,49 +297,29 @@ fn receive_metadata(stream: &mut TcpStream) -> Vec<u8> {
     }
 
     // Extension message ID is at index 1 (peer's ut_metadata ID)
-    // Parse bencoded dictionary from payload (starting at index 2)
+    // Payload starts at index 2
     let payload = &message[2..];
 
-    // Find where the bencoded dictionary ends by tracking depth
-    let mut depth = 0;
-    let mut dict_end = 0;
-    let mut in_string = false;
-    let mut string_len = 0;
+    // Parse the bencoded dictionary to validate it and get total_size
+    let metadata_dict: serde_bencode::value::Value = serde_bencode::from_bytes(payload).unwrap();
 
-    for (i, &byte) in payload.iter().enumerate() {
-        if in_string {
-            string_len -= 1;
-            if string_len == 0 {
-                in_string = false;
+    // Validate it's a data message (msg_type: 1)
+    if let serde_bencode::value::Value::Dict(dict) = &metadata_dict {
+        if let Some(serde_bencode::value::Value::Int(msg_type)) = dict.get(b"msg_type".as_ref()) {
+            if *msg_type != 1 {
+                panic!("Expected data message (msg_type 1), got {}", msg_type);
             }
-            continue;
         }
 
-        if byte == b'd' || byte == b'l' {
-            depth += 1;
-        } else if byte == b'e' {
-            depth -= 1;
-            if depth == 0 {
-                dict_end = i + 1;
-                break;
-            }
-        } else if byte >= b'0' && byte <= b'9' {
-            // This is a string length
-            let mut j = i;
-            while j < payload.len() && payload[j] != b':' {
-                j += 1;
-            }
-            if j < payload.len() {
-                let len_str = std::str::from_utf8(&payload[i..j]).unwrap();
-                string_len = len_str.parse::<usize>().unwrap();
-                in_string = true;
-            }
+        // Get the total_size to know how much metadata to expect
+        if let Some(serde_bencode::value::Value::Int(total_size)) = dict.get(b"total_size".as_ref()) {
+            // The metadata piece is at the end, with length = total_size
+            let metadata_start = payload.len() - (*total_size as usize);
+            return payload[metadata_start..].to_vec();
         }
     }
 
-    // Extract metadata piece contents (everything after the bencoded dictionary)
-    let metadata_piece = &payload[dict_end..];
-    metadata_piece.to_vec()
+    panic!("Failed to parse metadata response");
 }
 
 // Send metadata request message
