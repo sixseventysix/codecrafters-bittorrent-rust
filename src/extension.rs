@@ -152,38 +152,3 @@ pub fn receive_metadata(stream: &mut TcpStream) -> Vec<u8> {
 
     panic!("Failed to parse metadata response");
 }
-
-/// Exchange messages with extension support
-/// Returns the peer's ut_metadata extension ID if available
-pub fn exchange_messages_with_extensions(stream: &mut TcpStream, peer_supports_extensions: bool) -> Option<i64> {
-    // Read bitfield message
-    let mut length_prefix = [0u8; 4];
-    stream.read_exact(&mut length_prefix).unwrap();
-    let msg_length = u32::from_be_bytes(length_prefix);
-    let mut message = vec![0u8; msg_length as usize];
-    stream.read_exact(&mut message).unwrap();
-    // message[0] should be 5 (bitfield)
-
-    let mut peer_metadata_extension_id = None;
-
-    // Send extension handshake if peer supports extensions
-    if peer_supports_extensions {
-        send_extension_handshake(stream);
-
-        // Receive extension handshake response
-        peer_metadata_extension_id = receive_extension_handshake(stream);
-    }
-
-    // Send interested message
-    let interested_msg = [0u8, 0u8, 0u8, 1u8, 2u8]; // length=1, id=2
-    stream.write_all(&interested_msg).unwrap();
-
-    // Read unchoke message
-    stream.read_exact(&mut length_prefix).unwrap();
-    let msg_length = u32::from_be_bytes(length_prefix);
-    let mut message = vec![0u8; msg_length as usize];
-    stream.read_exact(&mut message).unwrap();
-    // message[0] should be 1 (unchoke)
-
-    peer_metadata_extension_id
-}

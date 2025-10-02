@@ -51,6 +51,7 @@ enum Commands {
         peer: String,
     },
     /// Download a single piece
+    #[command(name = "download_piece")]
     DownloadPiece {
         /// Output file path
         #[arg(short, long)]
@@ -69,21 +70,25 @@ enum Commands {
         torrent: String,
     },
     /// Parse a magnet link
+    #[command(name = "magnet_parse")]
     MagnetParse {
         /// Magnet link
         magnet_link: String,
     },
     /// Perform handshake using magnet link
+    #[command(name = "magnet_handshake")]
     MagnetHandshake {
         /// Magnet link
         magnet_link: String,
     },
     /// Get torrent info from magnet link
+    #[command(name = "magnet_info")]
     MagnetInfo {
         /// Magnet link
         magnet_link: String,
     },
     /// Download a single piece using magnet link
+    #[command(name = "magnet_download_piece")]
     MagnetDownloadPiece {
         /// Output file path
         #[arg(short, long)]
