@@ -617,9 +617,9 @@ fn main() {
 
         // Perform handshake with extension support
         let mut stream = TcpStream::connect(peer_addr).unwrap();
-        let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+        let (_peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
 
-        println!("Peer ID: {}", hex::encode(peer_id));
+        println!("Peer ID: {}", hex::encode(_peer_id));
 
         // If peer supports extensions, exchange extension handshakes
         if peer_supports_extensions {
