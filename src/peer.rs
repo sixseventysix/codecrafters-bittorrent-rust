@@ -1,20 +1,21 @@
 use std::net::TcpStream;
 use std::io::{Write, Read};
 use sha1::{Sha1, Digest};
+use anyhow::{Result, Context, anyhow};
 
 use crate::tracker::PEER_ID;
 
 pub const BLOCK_SIZE: i64 = 16 * 1024;
 
 /// Perform handshake with peer
-pub fn perform_handshake(stream: &mut TcpStream, info_hash: &[u8]) -> [u8; 20] {
-    let (peer_id, _) = perform_handshake_with_extensions(stream, info_hash, false);
-    peer_id
+pub fn perform_handshake(stream: &mut TcpStream, info_hash: &[u8]) -> Result<[u8; 20]> {
+    let (peer_id, _) = perform_handshake_with_extensions(stream, info_hash, false)?;
+    Ok(peer_id)
 }
 
 /// Perform handshake with peer, optionally with extension support
 /// Returns (peer_id, peer_supports_extensions)
-pub fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8], support_extensions: bool) -> ([u8; 20], bool) {
+pub fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8], support_extensions: bool) -> Result<([u8; 20], bool)> {
     let mut handshake = Vec::new();
     handshake.push(19u8);
     handshake.extend_from_slice(b"BitTorrent protocol");
@@ -30,10 +31,12 @@ pub fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8
     handshake.extend_from_slice(info_hash);
     handshake.extend_from_slice(PEER_ID.as_bytes());
 
-    stream.write_all(&handshake).unwrap();
+    stream.write_all(&handshake)
+        .context("Failed to send handshake")?;
 
     let mut response = [0u8; 68];
-    stream.read_exact(&mut response).unwrap();
+    stream.read_exact(&mut response)
+        .context("Failed to read handshake response")?;
 
     // Check if peer supports extensions (bit 20 from right in reserved bytes)
     let peer_reserved = &response[20..28];
@@ -43,29 +46,36 @@ pub fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8
     let mut peer_id = [0u8; 20];
     peer_id.copy_from_slice(&response[48..68]);
 
-    (peer_id, peer_supports_extensions)
+    Ok((peer_id, peer_supports_extensions))
 }
 
 /// Exchange initial peer messages (bitfield, interested, unchoke)
-pub fn exchange_initial_messages(stream: &mut TcpStream) {
+pub fn exchange_initial_messages(stream: &mut TcpStream) -> Result<()> {
     // Read bitfield message
     let mut length_prefix = [0u8; 4];
-    stream.read_exact(&mut length_prefix).unwrap();
+    stream.read_exact(&mut length_prefix)
+        .context("Failed to read bitfield message length")?;
     let msg_length = u32::from_be_bytes(length_prefix);
     let mut message = vec![0u8; msg_length as usize];
-    stream.read_exact(&mut message).unwrap();
+    stream.read_exact(&mut message)
+        .context("Failed to read bitfield message")?;
     // message[0] should be 5 (bitfield)
 
     // Send interested message
     let interested_msg = [0u8, 0u8, 0u8, 1u8, 2u8]; // length=1, id=2
-    stream.write_all(&interested_msg).unwrap();
+    stream.write_all(&interested_msg)
+        .context("Failed to send interested message")?;
 
     // Read unchoke message
-    stream.read_exact(&mut length_prefix).unwrap();
+    stream.read_exact(&mut length_prefix)
+        .context("Failed to read unchoke message length")?;
     let msg_length = u32::from_be_bytes(length_prefix);
     let mut message = vec![0u8; msg_length as usize];
-    stream.read_exact(&mut message).unwrap();
+    stream.read_exact(&mut message)
+        .context("Failed to read unchoke message")?;
     // message[0] should be 1 (unchoke)
+
+    Ok(())
 }
 
 /// Download a single piece from peer
@@ -75,7 +85,7 @@ pub fn download_piece_from_peer(
     piece_length: i64,
     total_length: i64,
     piece_hashes: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     // Calculate piece size for this piece
     let total_pieces = (total_length as f64 / piece_length as f64).ceil() as usize;
     let is_last_piece = piece_index == total_pieces - 1;
@@ -104,14 +114,17 @@ pub fn download_piece_from_peer(
         request_msg.extend_from_slice(&(piece_index as u32).to_be_bytes()); // index
         request_msg.extend_from_slice(&(block_begin as u32).to_be_bytes()); // begin
         request_msg.extend_from_slice(&(block_length as u32).to_be_bytes()); // length
-        stream.write_all(&request_msg).unwrap();
+        stream.write_all(&request_msg)
+            .context("Failed to send block request")?;
 
         // Read piece message
         let mut length_prefix = [0u8; 4];
-        stream.read_exact(&mut length_prefix).unwrap();
+        stream.read_exact(&mut length_prefix)
+            .context("Failed to read piece message length")?;
         let msg_length = u32::from_be_bytes(length_prefix);
         let mut message = vec![0u8; msg_length as usize];
-        stream.read_exact(&mut message).unwrap();
+        stream.read_exact(&mut message)
+            .context("Failed to read piece message")?;
 
         // message[0] should be 7 (piece)
         // message[1..5] is index
@@ -127,8 +140,8 @@ pub fn download_piece_from_peer(
     let expected_hash = &piece_hashes[piece_index * 20..(piece_index + 1) * 20];
 
     if calculated_hash.as_slice() != expected_hash {
-        panic!("Piece hash mismatch for piece {}!", piece_index);
+        return Err(anyhow!("Piece hash mismatch for piece {}", piece_index));
     }
 
-    piece_data
+    Ok(piece_data)
 }

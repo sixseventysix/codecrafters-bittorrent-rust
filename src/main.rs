@@ -10,6 +10,7 @@ use std::net::TcpStream;
 use std::io::Read;
 use sha1::{Sha1, Digest};
 use clap::{Parser, Subcommand};
+use anyhow::{Result, Context};
 
 use bencode::decode_bencoded_value;
 use torrent::parse_torrent_file;
@@ -100,17 +101,17 @@ enum Commands {
     },
 }
 
-fn main() {
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Decode { value } => {
-            let decoded_value = decode_bencoded_value(&value);
+            let decoded_value = decode_bencoded_value(&value)?;
             println!("{}", decoded_value.to_string());
         }
 
         Commands::Info { torrent } => {
-            let torrent_info = parse_torrent_file(&torrent);
+            let torrent_info = parse_torrent_file(&torrent)?;
             println!("Tracker URL: {}", torrent_info.tracker_url);
             println!("Length: {}", torrent_info.length);
             println!("Info Hash: {}", hex::encode(&torrent_info.info_hash));
@@ -122,28 +123,30 @@ fn main() {
         }
 
         Commands::Peers { torrent } => {
-            let torrent_info = parse_torrent_file(&torrent);
-            let peers = get_peers_from_tracker(&torrent_info);
+            let torrent_info = parse_torrent_file(&torrent)?;
+            let peers = get_peers_from_tracker(&torrent_info)?;
             for peer in peers {
                 println!("{}", peer);
             }
         }
 
         Commands::Handshake { torrent, peer } => {
-            let torrent_info = parse_torrent_file(&torrent);
-            let mut stream = TcpStream::connect(&peer).unwrap();
-            let peer_id = perform_handshake(&mut stream, &torrent_info.info_hash);
+            let torrent_info = parse_torrent_file(&torrent)?;
+            let mut stream = TcpStream::connect(&peer)
+                .context("Failed to connect to peer")?;
+            let peer_id = perform_handshake(&mut stream, &torrent_info.info_hash)?;
             println!("Peer ID: {}", hex::encode(peer_id));
         }
 
         Commands::DownloadPiece { output, torrent, piece } => {
-            let torrent_info = parse_torrent_file(&torrent);
-            let peers = get_peers_from_tracker(&torrent_info);
+            let torrent_info = parse_torrent_file(&torrent)?;
+            let peers = get_peers_from_tracker(&torrent_info)?;
             let peer_addr = &peers[0];
 
-            let mut stream = TcpStream::connect(peer_addr).unwrap();
-            perform_handshake(&mut stream, &torrent_info.info_hash);
-            exchange_initial_messages(&mut stream);
+            let mut stream = TcpStream::connect(peer_addr)
+                .context("Failed to connect to peer")?;
+            perform_handshake(&mut stream, &torrent_info.info_hash)?;
+            exchange_initial_messages(&mut stream)?;
 
             let piece_data = download_piece_from_peer(
                 &mut stream,
@@ -151,20 +154,22 @@ fn main() {
                 torrent_info.piece_length,
                 torrent_info.length,
                 &torrent_info.piece_hashes
-            );
+            )?;
 
-            fs::write(&output, &piece_data).unwrap();
+            fs::write(&output, &piece_data)
+                .context("Failed to write piece to file")?;
             println!("Piece {} downloaded to {}.", piece, output);
         }
 
         Commands::Download { output, torrent } => {
-            let torrent_info = parse_torrent_file(&torrent);
-            let peers = get_peers_from_tracker(&torrent_info);
+            let torrent_info = parse_torrent_file(&torrent)?;
+            let peers = get_peers_from_tracker(&torrent_info)?;
             let peer_addr = &peers[0];
 
-            let mut stream = TcpStream::connect(peer_addr).unwrap();
-            perform_handshake(&mut stream, &torrent_info.info_hash);
-            exchange_initial_messages(&mut stream);
+            let mut stream = TcpStream::connect(peer_addr)
+                .context("Failed to connect to peer")?;
+            perform_handshake(&mut stream, &torrent_info.info_hash)?;
+            exchange_initial_messages(&mut stream)?;
 
             let total_pieces = (torrent_info.length as f64 / torrent_info.piece_length as f64).ceil() as usize;
             let mut file_data = Vec::new();
@@ -175,77 +180,85 @@ fn main() {
                     torrent_info.piece_length,
                     torrent_info.length,
                     &torrent_info.piece_hashes
-                );
+                )?;
                 file_data.extend_from_slice(&piece_data);
             }
 
-            fs::write(&output, &file_data).unwrap();
+            fs::write(&output, &file_data)
+                .context("Failed to write file")?;
             println!("Downloaded {} to {}.", torrent, output);
         }
 
         Commands::MagnetParse { magnet_link } => {
-            let magnet_info = parse_magnet_link(&magnet_link);
+            let magnet_info = parse_magnet_link(&magnet_link)?;
             println!("Tracker URL: {}", magnet_info.tracker_url);
             println!("Info Hash: {}", magnet_info.info_hash);
         }
 
         Commands::MagnetHandshake { magnet_link } => {
-            let magnet_info = parse_magnet_link(&magnet_link);
-            let peers = get_peers_from_magnet(&magnet_info);
+            let magnet_info = parse_magnet_link(&magnet_link)?;
+            let peers = get_peers_from_magnet(&magnet_info)?;
             let peer_addr = &peers[0];
-            let info_hash_bytes = hex::decode(&magnet_info.info_hash).unwrap();
+            let info_hash_bytes = hex::decode(&magnet_info.info_hash)
+                .context("Failed to decode info hash")?;
 
-            let mut stream = TcpStream::connect(peer_addr).unwrap();
-            let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+            let mut stream = TcpStream::connect(peer_addr)
+                .context("Failed to connect to peer")?;
+            let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true)?;
 
             println!("Peer ID: {}", hex::encode(peer_id));
 
             if peer_supports_extensions {
                 let mut length_prefix = [0u8; 4];
-                stream.read_exact(&mut length_prefix).unwrap();
+                stream.read_exact(&mut length_prefix)
+                    .context("Failed to read bitfield length")?;
                 let msg_length = u32::from_be_bytes(length_prefix);
                 let mut message = vec![0u8; msg_length as usize];
-                stream.read_exact(&mut message).unwrap();
+                stream.read_exact(&mut message)
+                    .context("Failed to read bitfield message")?;
 
-                send_extension_handshake(&mut stream);
+                send_extension_handshake(&mut stream)?;
 
-                if let Some(extension_id) = receive_extension_handshake(&mut stream) {
-                    println!("Peer Metadata Extension ID: {}", extension_id);
-                }
+                let extension_id = receive_extension_handshake(&mut stream)?;
+                println!("Peer Metadata Extension ID: {}", extension_id);
             }
         }
 
         Commands::MagnetInfo { magnet_link } => {
-            let magnet_info = parse_magnet_link(&magnet_link);
-            let peers = get_peers_from_magnet(&magnet_info);
+            let magnet_info = parse_magnet_link(&magnet_link)?;
+            let peers = get_peers_from_magnet(&magnet_info)?;
             let peer_addr = &peers[0];
-            let info_hash_bytes = hex::decode(&magnet_info.info_hash).unwrap();
+            let info_hash_bytes = hex::decode(&magnet_info.info_hash)
+                .context("Failed to decode info hash")?;
 
-            let mut stream = TcpStream::connect(peer_addr).unwrap();
-            let (_, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+            let mut stream = TcpStream::connect(peer_addr)
+                .context("Failed to connect to peer")?;
+            let (_, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true)?;
 
             if !peer_supports_extensions {
                 eprintln!("Peer doesn't support extensions");
-                return;
+                return Ok(());
             }
 
             let mut length_prefix = [0u8; 4];
-            stream.read_exact(&mut length_prefix).unwrap();
+            stream.read_exact(&mut length_prefix)
+                .context("Failed to read bitfield length")?;
             let msg_length = u32::from_be_bytes(length_prefix);
             let mut message = vec![0u8; msg_length as usize];
-            stream.read_exact(&mut message).unwrap();
+            stream.read_exact(&mut message)
+                .context("Failed to read bitfield message")?;
 
-            send_extension_handshake(&mut stream);
+            send_extension_handshake(&mut stream)?;
 
-            let peer_metadata_extension_id = receive_extension_handshake(&mut stream)
-                .expect("Failed to get metadata extension ID");
+            let peer_metadata_extension_id = receive_extension_handshake(&mut stream)?;
 
-            send_metadata_request(&mut stream, peer_metadata_extension_id, 0);
+            send_metadata_request(&mut stream, peer_metadata_extension_id, 0)?;
 
-            let metadata_bytes = receive_metadata(&mut stream);
+            let metadata_bytes = receive_metadata(&mut stream)?;
 
             let info_dict: serde_bencode::value::Value =
-                serde_bencode::from_bytes(&metadata_bytes).unwrap();
+                serde_bencode::from_bytes(&metadata_bytes)
+                    .context("Failed to decode metadata")?;
 
             let mut hasher = Sha1::new();
             hasher.update(&metadata_bytes);
@@ -280,62 +293,66 @@ fn main() {
         }
 
         Commands::MagnetDownloadPiece { output, magnet_link, piece } => {
-            let magnet_info = parse_magnet_link(&magnet_link);
-            let peers = get_peers_from_magnet(&magnet_info);
+            let magnet_info = parse_magnet_link(&magnet_link)?;
+            let peers = get_peers_from_magnet(&magnet_info)?;
             let peer_addr = &peers[0];
-            let info_hash_bytes = hex::decode(&magnet_info.info_hash).unwrap();
+            let info_hash_bytes = hex::decode(&magnet_info.info_hash)
+                .context("Failed to decode info hash")?;
 
-            let mut stream = TcpStream::connect(peer_addr).unwrap();
-            let (_, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+            let mut stream = TcpStream::connect(peer_addr)
+                .context("Failed to connect to peer")?;
+            let (_, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true)?;
 
             if !peer_supports_extensions {
                 eprintln!("Peer doesn't support extensions");
-                return;
+                return Ok(());
             }
 
             // Read and discard the bitfield message
             let mut length_prefix = [0u8; 4];
-            stream.read_exact(&mut length_prefix).unwrap();
+            stream.read_exact(&mut length_prefix)
+                .context("Failed to read bitfield length")?;
             let msg_length = u32::from_be_bytes(length_prefix);
             let mut message = vec![0u8; msg_length as usize];
-            stream.read_exact(&mut message).unwrap();
+            stream.read_exact(&mut message)
+                .context("Failed to read bitfield message")?;
 
-            send_extension_handshake(&mut stream);
+            send_extension_handshake(&mut stream)?;
 
-            let peer_metadata_extension_id = receive_extension_handshake(&mut stream)
-                .expect("Failed to get metadata extension ID");
+            let peer_metadata_extension_id = receive_extension_handshake(&mut stream)?;
 
-            send_metadata_request(&mut stream, peer_metadata_extension_id, 0);
+            send_metadata_request(&mut stream, peer_metadata_extension_id, 0)?;
 
-            let metadata_bytes = receive_metadata(&mut stream);
+            let metadata_bytes = receive_metadata(&mut stream)?;
 
             let info_dict: serde_bencode::value::Value =
-                serde_bencode::from_bytes(&metadata_bytes).unwrap();
+                serde_bencode::from_bytes(&metadata_bytes)
+                    .context("Failed to decode metadata")?;
 
             if let serde_bencode::value::Value::Dict(info) = info_dict {
                 let length = if let Some(serde_bencode::value::Value::Int(l)) = info.get(b"length".as_ref()) {
                     *l
                 } else {
                     eprintln!("Failed to get file length from metadata");
-                    return;
+                    return Ok(());
                 };
 
                 let piece_length = if let Some(serde_bencode::value::Value::Int(pl)) = info.get(b"piece length".as_ref()) {
                     *pl
                 } else {
                     eprintln!("Failed to get piece length from metadata");
-                    return;
+                    return Ok(());
                 };
 
                 let piece_hashes = if let Some(serde_bencode::value::Value::Bytes(pieces)) = info.get(b"pieces".as_ref()) {
                     pieces.clone()
                 } else {
                     eprintln!("Failed to get piece hashes from metadata");
-                    return;
+                    return Ok(());
                 };
 
                 // Now exchange initial messages and download the piece
-                exchange_initial_messages(&mut stream);
+                exchange_initial_messages(&mut stream)?;
 
                 let piece_data = download_piece_from_peer(
                     &mut stream,
@@ -343,11 +360,14 @@ fn main() {
                     piece_length,
                     length,
                     &piece_hashes
-                );
+                )?;
 
-                fs::write(&output, &piece_data).unwrap();
+                fs::write(&output, &piece_data)
+                    .context("Failed to write piece to file")?;
                 println!("Piece {} downloaded to {}.", piece, output);
             }
         }
     }
+
+    Ok(())
 }
