@@ -1,6 +1,8 @@
 use serde_json;
 use std::env;
 use std::fs;
+use std::net::TcpStream;
+use std::io::{Write, Read};
 
 use serde_bencode;
 use sha1::{Sha1, Digest};
@@ -179,6 +181,50 @@ fn main() {
                 }
             }
         }
+    } else if command == "handshake" {
+        let torrent_file = &args[2];
+        let peer_addr = &args[3];
+
+        // Parse torrent file and calculate info hash
+        let bytes = fs::read(torrent_file).unwrap();
+        let torrent: serde_bencode::value::Value = serde_bencode::from_bytes(&bytes).unwrap();
+
+        let mut info_hash_bytes = Vec::new();
+
+        if let serde_bencode::value::Value::Dict(dict) = torrent {
+            if let Some(info_value) = dict.get(b"info".as_ref()) {
+                // Calculate info hash (raw bytes)
+                let info_bencoded = serde_bencode::to_bytes(info_value).unwrap();
+                let mut hasher = Sha1::new();
+                hasher.update(&info_bencoded);
+                info_hash_bytes = hasher.finalize().to_vec();
+            }
+        }
+
+        // Generate peer ID (20 bytes)
+        let peer_id = b"00112233445566778899";
+
+        // Construct handshake message
+        let mut handshake = Vec::new();
+        handshake.push(19u8); // length of protocol string
+        handshake.extend_from_slice(b"BitTorrent protocol"); // protocol string
+        handshake.extend_from_slice(&[0u8; 8]); // 8 reserved bytes
+        handshake.extend_from_slice(&info_hash_bytes); // info hash (20 bytes)
+        handshake.extend_from_slice(peer_id); // peer id (20 bytes)
+
+        // Connect to peer
+        let mut stream = TcpStream::connect(peer_addr).unwrap();
+
+        // Send handshake
+        stream.write_all(&handshake).unwrap();
+
+        // Receive handshake response (68 bytes total)
+        let mut response = [0u8; 68];
+        stream.read_exact(&mut response).unwrap();
+
+        // Extract peer ID from response (last 20 bytes)
+        let received_peer_id = &response[48..68];
+        println!("Peer ID: {}", hex::encode(received_peer_id));
     } else {
         println!("unknown command: {}", args[1])
     }
