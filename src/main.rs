@@ -279,6 +279,92 @@ fn exchange_initial_messages(stream: &mut TcpStream) {
     // message[0] should be 1 (unchoke)
 }
 
+// Receive metadata data message
+// Returns the metadata bytes
+fn receive_metadata(stream: &mut TcpStream) -> Vec<u8> {
+    // Read message length
+    let mut length_prefix = [0u8; 4];
+    stream.read_exact(&mut length_prefix).unwrap();
+    let msg_length = u32::from_be_bytes(length_prefix);
+
+    // Read message
+    let mut message = vec![0u8; msg_length as usize];
+    stream.read_exact(&mut message).unwrap();
+
+    // Check message ID (should be 20 for extension protocol)
+    if message[0] != 20 {
+        panic!("Expected extension message (ID 20), got {}", message[0]);
+    }
+
+    // Extension message ID is at index 1 (our peer's ut_metadata ID)
+    // Parse bencoded dictionary from payload (starting at index 2)
+    let payload = &message[2..];
+
+    // Find where the bencoded dictionary ends
+    // The dictionary starts with 'd' and ends with 'e'
+    let mut depth = 0;
+    let mut dict_end = 0;
+    for (i, &byte) in payload.iter().enumerate() {
+        if byte == b'd' || byte == b'l' {
+            depth += 1;
+        } else if byte == b'e' {
+            depth -= 1;
+            if depth == 0 {
+                dict_end = i + 1;
+                break;
+            }
+        }
+    }
+
+    let dict_bytes = &payload[..dict_end];
+    let metadata_dict: serde_bencode::value::Value =
+        serde_bencode::from_bytes(dict_bytes).unwrap();
+
+    // Validate it's a data message (msg_type: 1)
+    if let serde_bencode::value::Value::Dict(dict) = &metadata_dict {
+        if let Some(serde_bencode::value::Value::Int(msg_type)) = dict.get(b"msg_type".as_ref()) {
+            if *msg_type != 1 {
+                panic!("Expected data message (msg_type 1), got {}", msg_type);
+            }
+        }
+    }
+
+    // Extract metadata piece contents (everything after the bencoded dictionary)
+    let metadata_piece = &payload[dict_end..];
+    metadata_piece.to_vec()
+}
+
+// Send metadata request message
+fn send_metadata_request(stream: &mut TcpStream, peer_metadata_extension_id: i64, piece_index: i64) {
+    // Create bencoded dictionary: {"msg_type": 0, "piece": 0}
+    let request_dict = serde_bencode::value::Value::Dict(
+        vec![
+            (b"msg_type".to_vec(), serde_bencode::value::Value::Int(0)),
+            (b"piece".to_vec(), serde_bencode::value::Value::Int(piece_index)),
+        ].into_iter().collect()
+    );
+
+    let bencoded_dict = serde_bencode::to_bytes(&request_dict).unwrap();
+
+    // Build metadata request message
+    let mut metadata_request = Vec::new();
+
+    // Message length = 1 (message id = 20) + 1 (peer's extension id) + bencoded dict length
+    let message_length = 1 + 1 + bencoded_dict.len();
+    metadata_request.extend_from_slice(&(message_length as u32).to_be_bytes());
+
+    // Message ID for extension protocol is 20
+    metadata_request.push(20u8);
+
+    // Extension message ID (peer's ut_metadata ID)
+    metadata_request.push(peer_metadata_extension_id as u8);
+
+    // Bencoded dictionary
+    metadata_request.extend_from_slice(&bencoded_dict);
+
+    stream.write_all(&metadata_request).unwrap();
+}
+
 // Receive and parse extension handshake message
 // Returns the peer's extension ID for ut_metadata
 fn receive_extension_handshake(stream: &mut TcpStream) -> Option<i64> {
@@ -597,6 +683,83 @@ fn main() {
             // Receive peer's extension handshake
             if let Some(extension_id) = receive_extension_handshake(&mut stream) {
                 println!("Peer Metadata Extension ID: {}", extension_id);
+            }
+        }
+    } else if command == "magnet_info" {
+        let magnet_link = &args[2];
+        let magnet_info = parse_magnet_link(magnet_link);
+
+        // Get peers from tracker
+        let peers = get_peers_from_magnet(&magnet_info);
+        let peer_addr = &peers[0]; // Use first peer
+
+        // Convert hex info hash to bytes
+        let info_hash_bytes = hex_to_bytes(&magnet_info.info_hash);
+
+        // Perform handshake with extension support
+        let mut stream = TcpStream::connect(peer_addr).unwrap();
+        let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+
+        if !peer_supports_extensions {
+            eprintln!("Peer doesn't support extensions");
+            return;
+        }
+
+        // Read bitfield message
+        let mut length_prefix = [0u8; 4];
+        stream.read_exact(&mut length_prefix).unwrap();
+        let msg_length = u32::from_be_bytes(length_prefix);
+        let mut message = vec![0u8; msg_length as usize];
+        stream.read_exact(&mut message).unwrap();
+
+        // Send our extension handshake
+        send_extension_handshake(&mut stream);
+
+        // Receive peer's extension handshake
+        let peer_metadata_extension_id = receive_extension_handshake(&mut stream).expect("Failed to get metadata extension ID");
+
+        // Send metadata request for piece 0
+        send_metadata_request(&mut stream, peer_metadata_extension_id, 0);
+
+        // Receive metadata response
+        let metadata_bytes = receive_metadata(&mut stream);
+
+        // Parse the metadata (info dictionary)
+        let info_dict: serde_bencode::value::Value =
+            serde_bencode::from_bytes(&metadata_bytes).unwrap();
+
+        // Verify info hash
+        let mut hasher = Sha1::new();
+        hasher.update(&metadata_bytes);
+        let calculated_info_hash = hasher.finalize();
+        let calculated_info_hash_hex = hex::encode(calculated_info_hash);
+
+        if calculated_info_hash_hex != magnet_info.info_hash {
+            eprintln!("Info hash mismatch! Expected: {}, Got: {}", magnet_info.info_hash, calculated_info_hash_hex);
+        }
+
+        // Extract fields from info dictionary
+        if let serde_bencode::value::Value::Dict(info) = info_dict {
+            println!("Tracker URL: {}", magnet_info.tracker_url);
+
+            // Extract length
+            if let Some(serde_bencode::value::Value::Int(length)) = info.get(b"length".as_ref()) {
+                println!("Length: {}", length);
+            }
+
+            println!("Info Hash: {}", magnet_info.info_hash);
+
+            // Extract piece length
+            if let Some(serde_bencode::value::Value::Int(piece_length)) = info.get(b"piece length".as_ref()) {
+                println!("Piece Length: {}", piece_length);
+            }
+
+            // Extract and print piece hashes
+            if let Some(serde_bencode::value::Value::Bytes(pieces)) = info.get(b"pieces".as_ref()) {
+                println!("Piece Hashes:");
+                for chunk in pieces.chunks(20) {
+                    println!("{}", hex::encode(chunk));
+                }
             }
         }
     } else {
