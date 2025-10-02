@@ -181,11 +181,13 @@ fn get_peers_from_magnet(magnet_info: &MagnetLink) -> Vec<String> {
 
 // Perform handshake with peer
 fn perform_handshake(stream: &mut TcpStream, info_hash: &[u8]) -> [u8; 20] {
-    perform_handshake_with_extensions(stream, info_hash, false)
+    let (peer_id, _) = perform_handshake_with_extensions(stream, info_hash, false);
+    peer_id
 }
 
 // Perform handshake with peer, optionally with extension support
-fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8], support_extensions: bool) -> [u8; 20] {
+// Returns (peer_id, peer_supports_extensions)
+fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8], support_extensions: bool) -> ([u8; 20], bool) {
     let mut handshake = Vec::new();
     handshake.push(19u8);
     handshake.extend_from_slice(b"BitTorrent protocol");
@@ -206,10 +208,53 @@ fn perform_handshake_with_extensions(stream: &mut TcpStream, info_hash: &[u8], s
     let mut response = [0u8; 68];
     stream.read_exact(&mut response).unwrap();
 
+    // Check if peer supports extensions (bit 20 from right in reserved bytes)
+    let peer_reserved = &response[20..28];
+    let peer_supports_extensions = (peer_reserved[5] & 0x10) != 0;
+
     // Extract peer ID from response (last 20 bytes)
     let mut peer_id = [0u8; 20];
     peer_id.copy_from_slice(&response[48..68]);
-    peer_id
+
+    (peer_id, peer_supports_extensions)
+}
+
+// Send extension handshake message
+fn send_extension_handshake(stream: &mut TcpStream) {
+    // Create bencoded dictionary: {"m": {"ut_metadata": 16}}
+    // We'll use extension ID 16 for ut_metadata
+    let extension_dict = serde_bencode::value::Value::Dict(
+        vec![
+            (
+                b"m".to_vec(),
+                serde_bencode::value::Value::Dict(
+                    vec![
+                        (b"ut_metadata".to_vec(), serde_bencode::value::Value::Int(16))
+                    ].into_iter().collect()
+                )
+            )
+        ].into_iter().collect()
+    );
+
+    let bencoded_dict = serde_bencode::to_bytes(&extension_dict).unwrap();
+
+    // Build extension handshake message
+    let mut extension_handshake = Vec::new();
+
+    // Payload length = 1 (extension message id) + bencoded dict length
+    let payload_length = 1 + bencoded_dict.len();
+    extension_handshake.extend_from_slice(&(payload_length as u32).to_be_bytes());
+
+    // Message ID for extension protocol is 20
+    extension_handshake.push(20u8);
+
+    // Extension message ID for handshake is 0
+    extension_handshake.push(0u8);
+
+    // Bencoded dictionary
+    extension_handshake.extend_from_slice(&bencoded_dict);
+
+    stream.write_all(&extension_handshake).unwrap();
 }
 
 // Exchange initial peer messages (bitfield, interested, unchoke)
@@ -221,6 +266,33 @@ fn exchange_initial_messages(stream: &mut TcpStream) {
     let mut message = vec![0u8; msg_length as usize];
     stream.read_exact(&mut message).unwrap();
     // message[0] should be 5 (bitfield)
+
+    // Send interested message
+    let interested_msg = [0u8, 0u8, 0u8, 1u8, 2u8]; // length=1, id=2
+    stream.write_all(&interested_msg).unwrap();
+
+    // Read unchoke message
+    stream.read_exact(&mut length_prefix).unwrap();
+    let msg_length = u32::from_be_bytes(length_prefix);
+    let mut message = vec![0u8; msg_length as usize];
+    stream.read_exact(&mut message).unwrap();
+    // message[0] should be 1 (unchoke)
+}
+
+// Exchange messages with extension support
+fn exchange_messages_with_extensions(stream: &mut TcpStream, peer_supports_extensions: bool) {
+    // Read bitfield message
+    let mut length_prefix = [0u8; 4];
+    stream.read_exact(&mut length_prefix).unwrap();
+    let msg_length = u32::from_be_bytes(length_prefix);
+    let mut message = vec![0u8; msg_length as usize];
+    stream.read_exact(&mut message).unwrap();
+    // message[0] should be 5 (bitfield)
+
+    // Send extension handshake if peer supports extensions
+    if peer_supports_extensions {
+        send_extension_handshake(stream);
+    }
 
     // Send interested message
     let interested_msg = [0u8, 0u8, 0u8, 1u8, 2u8]; // length=1, id=2
@@ -459,7 +531,10 @@ fn main() {
 
         // Perform handshake with extension support
         let mut stream = TcpStream::connect(peer_addr).unwrap();
-        let peer_id = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+        let (peer_id, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true);
+
+        // Exchange messages (bitfield, extension handshake if supported, interested, unchoke)
+        exchange_messages_with_extensions(&mut stream, peer_supports_extensions);
 
         println!("Peer ID: {}", hex::encode(peer_id));
     } else {
