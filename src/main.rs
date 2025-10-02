@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 
 use serde_bencode;
+use sha1::{Sha1, Digest};
 
 fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
     let decoded: serde_bencode::value::Value = serde_bencode::from_str(encoded_value).unwrap();
@@ -77,11 +78,21 @@ fn main() {
                 println!("Tracker URL: {}", tracker_url);
             }
 
-            // Extract length from info dictionary
-            if let Some(serde_bencode::value::Value::Dict(info)) = dict.get(b"info".as_ref()) {
-                if let Some(serde_bencode::value::Value::Int(length)) = info.get(b"length".as_ref()) {
-                    println!("Length: {}", length);
+            // Extract length and calculate info hash from info dictionary
+            if let Some(info_value) = dict.get(b"info".as_ref()) {
+                // Extract length
+                if let serde_bencode::value::Value::Dict(info) = info_value {
+                    if let Some(serde_bencode::value::Value::Int(length)) = info.get(b"length".as_ref()) {
+                        println!("Length: {}", length);
+                    }
                 }
+
+                // Calculate info hash
+                let info_bencoded = serde_bencode::to_bytes(info_value).unwrap();
+                let mut hasher = Sha1::new();
+                hasher.update(&info_bencoded);
+                let info_hash = hasher.finalize();
+                println!("Info Hash: {}", hex::encode(info_hash));
             }
         }
     } else {
