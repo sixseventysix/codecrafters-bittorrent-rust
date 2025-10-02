@@ -241,9 +241,9 @@ fn send_extension_handshake(stream: &mut TcpStream) {
     // Build extension handshake message
     let mut extension_handshake = Vec::new();
 
-    // Payload length = 1 (extension message id) + bencoded dict length
-    let payload_length = 1 + bencoded_dict.len();
-    extension_handshake.extend_from_slice(&(payload_length as u32).to_be_bytes());
+    // Message length = 1 (message id = 20) + 1 (extension message id = 0) + bencoded dict length
+    let message_length = 1 + 1 + bencoded_dict.len();
+    extension_handshake.extend_from_slice(&(message_length as u32).to_be_bytes());
 
     // Message ID for extension protocol is 20
     extension_handshake.push(20u8);
