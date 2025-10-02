@@ -99,6 +99,15 @@ enum Commands {
         /// Piece index
         piece: usize,
     },
+    /// Download entire file using magnet link
+    #[command(name = "magnet_download")]
+    MagnetDownload {
+        /// Output file path
+        #[arg(short, long)]
+        output: String,
+        /// Magnet link
+        magnet_link: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -377,6 +386,99 @@ fn main() -> Result<()> {
                 fs::write(&output, &piece_data)
                     .context("Failed to write piece to file")?;
                 println!("Piece {} downloaded to {}.", piece, output);
+            }
+        }
+
+        Commands::MagnetDownload { output, magnet_link } => {
+            let magnet_info = parse_magnet_link(&magnet_link)?;
+            let peers = get_peers_from_magnet(&magnet_info)?;
+            let peer_addr = &peers[0];
+            let info_hash_bytes = hex::decode(&magnet_info.info_hash)
+                .context("Failed to decode info hash")?;
+
+            let mut stream = TcpStream::connect(peer_addr)
+                .context("Failed to connect to peer")?;
+            let (_, peer_supports_extensions) = perform_handshake_with_extensions(&mut stream, &info_hash_bytes, true)?;
+
+            if !peer_supports_extensions {
+                eprintln!("Peer doesn't support extensions");
+                return Ok(());
+            }
+
+            // Read and discard the bitfield message
+            let mut length_prefix = [0u8; 4];
+            stream.read_exact(&mut length_prefix)
+                .context("Failed to read bitfield length")?;
+            let msg_length = u32::from_be_bytes(length_prefix);
+            let mut message = vec![0u8; msg_length as usize];
+            stream.read_exact(&mut message)
+                .context("Failed to read bitfield message")?;
+
+            send_extension_handshake(&mut stream)?;
+
+            let peer_metadata_extension_id = receive_extension_handshake(&mut stream)?;
+
+            send_metadata_request(&mut stream, peer_metadata_extension_id, 0)?;
+
+            let metadata_bytes = receive_metadata(&mut stream)?;
+
+            let info_dict: serde_bencode::value::Value =
+                serde_bencode::from_bytes(&metadata_bytes)
+                    .context("Failed to decode metadata")?;
+
+            if let serde_bencode::value::Value::Dict(info) = info_dict {
+                let length = if let Some(serde_bencode::value::Value::Int(l)) = info.get(b"length".as_ref()) {
+                    *l
+                } else {
+                    eprintln!("Failed to get file length from metadata");
+                    return Ok(());
+                };
+
+                let piece_length = if let Some(serde_bencode::value::Value::Int(pl)) = info.get(b"piece length".as_ref()) {
+                    *pl
+                } else {
+                    eprintln!("Failed to get piece length from metadata");
+                    return Ok(());
+                };
+
+                let piece_hashes = if let Some(serde_bencode::value::Value::Bytes(pieces)) = info.get(b"pieces".as_ref()) {
+                    pieces.clone()
+                } else {
+                    eprintln!("Failed to get piece hashes from metadata");
+                    return Ok(());
+                };
+
+                // Send interested message (bitfield was already read above)
+                let interested_msg = [0u8, 0u8, 0u8, 1u8, 2u8]; // length=1, id=2
+                stream.write_all(&interested_msg)
+                    .context("Failed to send interested message")?;
+
+                // Read unchoke message
+                stream.read_exact(&mut length_prefix)
+                    .context("Failed to read unchoke message length")?;
+                let msg_length = u32::from_be_bytes(length_prefix);
+                let mut message = vec![0u8; msg_length as usize];
+                stream.read_exact(&mut message)
+                    .context("Failed to read unchoke message")?;
+                // message[0] should be 1 (unchoke)
+
+                // Download all pieces
+                let total_pieces = (length as f64 / piece_length as f64).ceil() as usize;
+                let mut file_data = Vec::new();
+                for piece_index in 0..total_pieces {
+                    let piece_data = download_piece_from_peer(
+                        &mut stream,
+                        piece_index,
+                        piece_length,
+                        length,
+                        &piece_hashes
+                    )?;
+                    file_data.extend_from_slice(&piece_data);
+                }
+
+                fs::write(&output, &file_data)
+                    .context("Failed to write file")?;
+                println!("Downloaded {} to {}.", magnet_link, output);
             }
         }
     }
